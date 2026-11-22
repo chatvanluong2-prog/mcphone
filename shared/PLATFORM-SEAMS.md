@@ -267,7 +267,7 @@ Minecraft 1.20.1，在其之前，那一侧只能使用能力。`getCapability(.
 - `platform.client.SystemFiles`
 - `platform.client.VanillaAudio`
 
-#### 平台内部的（20）
+#### 平台内部的（22）
 
 只在这个平台自己的代码里用到。新平台不必提供同名类型。
 
@@ -279,6 +279,8 @@ Minecraft 1.20.1，在其之前，那一侧只能使用能力。`getCapability(.
 - `core.script.net.ScriptNetworking`　—— 加载器导入
 - `feature.camera.client.CameraHandler`　—— 加载器导入
 - `feature.chat.net.ChatNetworking`　—— 加载器导入
+- `feature.flashlight.Flashlight`　—— 加载器导入
+- `feature.flashlight.net.FlashlightPacket`　—— 1.20.5+ 原版
 - `feature.notes.net.NotesNetworking`　—— 加载器导入
 - `feature.store.net.StoreNetworking`　—— 加载器导入
 - `feature.terminal.integration.ae2.Ae2wtlibSupport`
