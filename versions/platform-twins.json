@@ -6,7 +6,7 @@
     "归零的那一对会单独报出来：逐字相同就该搬进 shared/，不该留在这儿。"
   ],
   "pairs": {
-    "com/november/mcphone/MCphone.java": 592,
+    "com/november/mcphone/MCphone.java": 598,
     "com/november/mcphone/MCphoneClient.java": 451,
     "com/november/mcphone/api/client/ui/PhoneMultiLineEditBox.java": 63,
     "com/november/mcphone/compat/CompatModule.java": 12,
@@ -35,7 +35,7 @@
     "com/november/mcphone/core/client/PhoneSkinMetadata.java": 12,
     "com/november/mcphone/core/menu/ModMenus.java": 129,
     "com/november/mcphone/core/net/MCphoneNetwork.java": 589,
-    "com/november/mcphone/core/net/NetworkHandler.java": 364,
+    "com/november/mcphone/core/net/NetworkHandler.java": 368,
     "com/november/mcphone/core/net/PhoneScreenOnPacket.java": 130,
     "com/november/mcphone/core/net/RequestThrottle.java": 20,
     "com/november/mcphone/core/net/SyncServerConfigPacket.java": 82,
