@@ -31,6 +31,14 @@ public class MCphone {
         com.november.mcphone.core.ModSounds.SOUND_EVENTS.register(modEventBus);
         modEventBus.addListener(com.november.mcphone.core.net.NetworkHandler::register);
 
+        // Đèn pin (server)
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                com.november.mcphone.feature.flashlight.Flashlight::onPlayerTick);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                com.november.mcphone.feature.flashlight.Flashlight::onLogout);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                com.november.mcphone.feature.flashlight.Flashlight::onChangeDimension);
+
         // 游戏总线，显式挂载：这三条漏了没有任何症状，只是下线玩家的表再也不缩小
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
                 com.november.mcphone.core.net.RequestThrottle::onPlayerLoggedOut);

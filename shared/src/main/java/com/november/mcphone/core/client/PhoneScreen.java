@@ -224,6 +224,35 @@ public final class PhoneScreen extends PhoneScreenBase {
     /** HUD 上正抓着手机挪位置。按在边框或状态栏上开始，见 {@link #isOnHudHandle} */
     private boolean hudDragging;
 
+    // ---- iPhone: vuốt thanh Home Indicator + đèn pin ----
+    private boolean navSwiping;
+    private double navSwipeX, navSwipeY;
+    private long navSwipeAt;
+    private boolean flashlightOn;
+    private static final int SWIPE_MIN = 10;      // px (đã quy đổi theo UI phone)
+    private static final long SWIPE_HOLD_MS = 350; // vuốt lên + giữ = đa nhiệm
+
+    private int flashX() { return phoneLeft + 8; }
+    private int flashY() { return phoneTop + metrics.screenH() - metrics.navThickness() - 22; }
+    private boolean onFlashlightButton(double mx, double my) {
+        return mode == Mode.MAIN && !inHomeFolder()
+                && mx >= flashX() && mx < flashX() + 16 && my >= flashY() && my < flashY() + 16;
+    }
+    private void drawFlashlightButton(GuiGraphics g) {
+        if (mode != Mode.MAIN || inHomeFolder()) return;
+        int x = flashX(), y = flashY();
+        g.fill(x, y + 1, x + 16, y + 15, flashlightOn ? 0xFFFFFFFF : 0xB0202024);
+        g.fill(x + 1, y, x + 15, y + 16, flashlightOn ? 0xFFFFFFFF : 0xB0202024);
+        int c = flashlightOn ? 0xFF1C1C1E : 0xFFFFFFFF;
+        g.fill(x + 5, y + 3, x + 11, y + 5, c);   // đầu đèn
+        g.fill(x + 6, y + 5, x + 10, y + 12, c);  // thân đèn
+    }
+    private void setFlashlight(boolean on) {
+        flashlightOn = on;
+        com.november.mcphone.core.net.MCphoneNetwork.sendToServer(
+                new com.november.mcphone.feature.flashlight.net.FlashlightPacket(on));
+    }
+
     /** 按下那一刻，光标相对机身左上角的偏移。不记的话手机会"跳"到光标下面 */
     private int hudGrabX, hudGrabY;
 
@@ -1088,6 +1117,7 @@ public final class PhoneScreen extends PhoneScreenBase {
         }
 
         PhoneChassis.drawNavBar(g, font, phoneLeft, phoneTop, metrics, mouseX, mouseY, !folderOpen);
+        drawFlashlightButton(g);
         if (changelogPopup) {
             changelogDialog.render(g, phoneLeft, phoneTop, metrics.screenW(), sh, statusH, navH,
                     font, true, pointerX, pointerY);
@@ -1332,23 +1362,17 @@ public final class PhoneScreen extends PhoneScreenBase {
             return true;
         }
 
-        switch (PhoneChassis.hitTestNavBar(mx, my, phoneLeft, phoneTop, metrics)) {
-            case BACK -> {
-                // 主屏上按返回不关机
-                goBackOneLevel();
-                return true;
-            }
-            case HOME -> {
-                homeFolder.close();
-                navigateTo(Mode.MAIN);
-                return true;
-            }
-            case TASKS -> {
-                if (hudMode) PhoneHud.showFullscreen(this);
-                else PhoneHud.showAsHud(this);
-                return true;
-            }
-            case NONE -> { }
+        if (onFlashlightButton(mx, my)) {
+            setFlashlight(!flashlightOn);
+            return true;
+        }
+        // Thanh điều hướng kiểu iPhone: bắt đầu vuốt, quyết định khi nhả chuột
+        if (PhoneChassis.hitTestNavBar(mx, my, phoneLeft, phoneTop, metrics) != PhoneChassis.NavButton.NONE) {
+            navSwiping = true;
+            navSwipeX = mx;
+            navSwipeY = my;
+            navSwipeAt = System.currentTimeMillis();
+            return true;
         }
 
         return switch (mode) {
@@ -1655,6 +1679,27 @@ public final class PhoneScreen extends PhoneScreenBase {
     @Override
     public boolean mouseReleased(double rawX, double rawY, int button) {
         if (changelogPopup) return true;
+        if (navSwiping && button == 0) {
+            navSwiping = false;
+            double dx = unscaledX(rawX) - navSwipeX;
+            double dy = unscaledY(rawY) - navSwipeY;
+            long held = System.currentTimeMillis() - navSwipeAt;
+            if (-dy >= SWIPE_MIN && Math.abs(dx) < Math.abs(dy) * 2) {
+                if (held >= SWIPE_HOLD_MS) {           // vuốt lên + giữ: đa nhiệm
+                    if (hudMode) PhoneHud.showFullscreen(this);
+                    else PhoneHud.showAsHud(this);
+                } else {                                // vuốt lên: về màn hình chính
+                    homeFolder.close();
+                    navigateTo(Mode.MAIN);
+                }
+            } else if (Math.abs(dx) >= SWIPE_MIN && Math.abs(dx) > Math.abs(dy)) {
+                goBackOneLevel();                       // vuốt ngang: quay lại
+            } else {
+                homeFolder.close();                     // chạm nhẹ: về màn hình chính
+                navigateTo(Mode.MAIN);
+            }
+            return true;
+        }
         if (mode == Mode.CHAT && chatList.hasContextMenu()) return true;
         if (hudDragging) {
             hudDragging = false;

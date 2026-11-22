@@ -1,0 +1,287 @@
+diff --git a/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/MCphone.java b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/MCphone.java
+index e76c1aa..fa2691d 100644
+--- a/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/MCphone.java
++++ b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/MCphone.java
+@@ -31,6 +31,14 @@ public class MCphone {
+         com.november.mcphone.core.ModSounds.SOUND_EVENTS.register(modEventBus);
+         modEventBus.addListener(com.november.mcphone.core.net.NetworkHandler::register);
+ 
++        // Đèn pin (server)
++        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
++                com.november.mcphone.feature.flashlight.Flashlight::onPlayerTick);
++        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
++                com.november.mcphone.feature.flashlight.Flashlight::onLogout);
++        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
++                com.november.mcphone.feature.flashlight.Flashlight::onChangeDimension);
++
+         // 游戏总线，显式挂载：这三条漏了没有任何症状，只是下线玩家的表再也不缩小
+         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                 com.november.mcphone.core.net.RequestThrottle::onPlayerLoggedOut);
+diff --git a/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/core/net/NetworkHandler.java b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/core/net/NetworkHandler.java
+index 2495a46..d9b744c 100644
+--- a/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/core/net/NetworkHandler.java
++++ b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/core/net/NetworkHandler.java
+@@ -59,7 +59,7 @@ public final class NetworkHandler {
+         // "3"：S17 Stage 2 的握手下发里，部署项加了 approvalRevision / approvedAt 两个 varlong。
+         // 字段格式变了就抬（不只是包顺序）；旧客户端会把批准轴当动作表长度解码，表现为
+         // "握手批次永远收不齐、本服看起来没部署"。Fabric 那一支没有这个闸，改在 begin.scriptApi。
+-        PayloadRegistrar registrar = event.registrar("10");
++        PayloadRegistrar registrar = event.registrar("11");
+ 
+         // C2S: 玩家选了壁纸
+         MCphoneNetwork.registerToServer(
+@@ -126,6 +126,12 @@ public final class NetworkHandler {
+         com.november.mcphone.core.script.net.ScriptNetworking.register(registrar);
+         com.november.mcphone.feature.chat.group.net.GroupNetworking.register(registrar);
+         com.november.mcphone.feature.chat.profile.net.ProfileNetworking.register(registrar);
++
++        // Đèn pin: đăng ký CUỐI CÙNG để không đổi thứ tự các gói cũ
++        MCphoneNetwork.registerToServer(registrar,
++                com.november.mcphone.feature.flashlight.net.FlashlightPacket.TYPE,
++                com.november.mcphone.feature.flashlight.net.FlashlightPacket.STREAM_CODEC,
++                com.november.mcphone.feature.flashlight.Flashlight::handlePacket);
+     }
+ 
+     //  处理函数
+diff --git a/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/feature/flashlight/Flashlight.java b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/feature/flashlight/Flashlight.java
+new file mode 100644
+index 0000000..e9dc357
+--- /dev/null
++++ b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/feature/flashlight/Flashlight.java
+@@ -0,0 +1,95 @@
++package com.november.mcphone.feature.flashlight;
++
++import com.november.mcphone.feature.flashlight.net.FlashlightPacket;
++import net.minecraft.core.BlockPos;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.server.level.ServerPlayer;
++import net.minecraft.world.level.ClipContext;
++import net.minecraft.world.level.block.Blocks;
++import net.minecraft.world.level.block.LightBlock;
++import net.minecraft.world.level.block.state.BlockState;
++import net.minecraft.world.phys.HitResult;
++import net.minecraft.world.phys.Vec3;
++import net.neoforged.neoforge.event.entity.player.PlayerEvent;
++import net.neoforged.neoforge.event.tick.PlayerTickEvent;
++
++import java.util.HashMap;
++import java.util.Map;
++import java.util.UUID;
++
++/**
++ * Đèn pin phía server: mỗi tick bắn tia từ mắt người chơi theo hướng nhìn,
++ * đặt một khối ánh sáng (minecraft:light) vào ô trống cuối cùng trước khi chạm vật cản.
++ * Khối cũ được dọn khi tia dời đi, khi tắt đèn, khi thoát game hoặc đổi chiều không gian.
++ * Chỉ ghi đè ô là không khí nên không phá bất kỳ khối thật nào.
++ */
++public final class Flashlight {
++
++    private static final int RANGE = 24;
++    private static final int LEVEL = 15;
++
++    private record Placed(ServerLevel level, BlockPos pos) {}
++
++    private static final Map<UUID, Placed> PLACED = new HashMap<>();
++    private static final Map<UUID, Boolean> ON = new HashMap<>();
++
++    private Flashlight() {}
++
++    public static void handlePacket(FlashlightPacket packet, ServerPlayer player) {
++        if (packet.on()) ON.put(player.getUUID(), true);
++        else {
++            ON.remove(player.getUUID());
++            clear(player.getUUID());
++        }
++    }
++
++    public static void onPlayerTick(PlayerTickEvent.Post event) {
++        if (!(event.getEntity() instanceof ServerPlayer player)) return;
++        UUID id = player.getUUID();
++        if (!ON.containsKey(id)) return;
++        if (player.isSpectator() || !player.isAlive()) {
++            clear(id);
++            return;
++        }
++        ServerLevel level = player.serverLevel();
++        Vec3 eye = player.getEyePosition();
++        Vec3 end = eye.add(player.getLookAngle().scale(RANGE));
++        var hit = level.clip(new ClipContext(eye, end, ClipContext.Block.COLLIDER,
++                ClipContext.Fluid.NONE, player));
++
++        BlockPos target;
++        if (hit.getType() == HitResult.Type.BLOCK) {
++            target = hit.getBlockPos().relative(hit.getDirection());
++        } else {
++            target = BlockPos.containing(end);
++        }
++
++        Placed old = PLACED.get(id);
++        if (old != null && old.level() == level && old.pos().equals(target)) return;
++
++        BlockState at = level.getBlockState(target);
++        if (!at.isAir()) return; // không ghi đè khối thật; giữ đèn ở chỗ cũ
++
++        clear(id);
++        level.setBlock(target, Blocks.LIGHT.defaultBlockState().setValue(LightBlock.LEVEL, LEVEL), 3);
++        PLACED.put(id, new Placed(level, target));
++    }
++
++    public static void onLogout(PlayerEvent.PlayerLoggedOutEvent event) {
++        UUID id = event.getEntity().getUUID();
++        ON.remove(id);
++        clear(id);
++    }
++
++    public static void onChangeDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
++        clear(event.getEntity().getUUID());
++    }
++
++    private static void clear(UUID id) {
++        Placed p = PLACED.remove(id);
++        if (p == null) return;
++        if (p.level().getBlockState(p.pos()).is(Blocks.LIGHT)) {
++            p.level().setBlock(p.pos(), Blocks.AIR.defaultBlockState(), 3);
++        }
++    }
++}
+diff --git a/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/feature/flashlight/net/FlashlightPacket.java b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/feature/flashlight/net/FlashlightPacket.java
+new file mode 100644
+index 0000000..806eb6b
+--- /dev/null
++++ b/platforms/1.21.1-neoforge/src/main/java/com/november/mcphone/feature/flashlight/net/FlashlightPacket.java
+@@ -0,0 +1,24 @@
++package com.november.mcphone.feature.flashlight.net;
++
++import com.november.mcphone.MCphone;
++import io.netty.buffer.ByteBuf;
++import net.minecraft.network.codec.ByteBufCodecs;
++import net.minecraft.network.codec.StreamCodec;
++import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
++import net.minecraft.resources.ResourceLocation;
++
++/** C2S: bật / tắt đèn pin. */
++public record FlashlightPacket(boolean on) implements CustomPacketPayload {
++
++    public static final CustomPacketPayload.Type<FlashlightPacket> TYPE =
++            new CustomPacketPayload.Type<>(
++                    ResourceLocation.fromNamespaceAndPath(MCphone.MODID, "flashlight"));
++
++    public static final StreamCodec<ByteBuf, FlashlightPacket> STREAM_CODEC =
++            StreamCodec.composite(ByteBufCodecs.BOOL, FlashlightPacket::on, FlashlightPacket::new);
++
++    @Override
++    public Type<? extends CustomPacketPayload> type() {
++        return TYPE;
++    }
++}
+diff --git a/shared/src/main/java/com/november/mcphone/core/client/PhoneScreen.java b/shared/src/main/java/com/november/mcphone/core/client/PhoneScreen.java
+index d907c80..f25036f 100644
+--- a/shared/src/main/java/com/november/mcphone/core/client/PhoneScreen.java
++++ b/shared/src/main/java/com/november/mcphone/core/client/PhoneScreen.java
+@@ -224,6 +224,35 @@ public final class PhoneScreen extends PhoneScreenBase {
+     /** HUD 上正抓着手机挪位置。按在边框或状态栏上开始，见 {@link #isOnHudHandle} */
+     private boolean hudDragging;
+ 
++    // ---- iPhone: vuốt thanh Home Indicator + đèn pin ----
++    private boolean navSwiping;
++    private double navSwipeX, navSwipeY;
++    private long navSwipeAt;
++    private boolean flashlightOn;
++    private static final int SWIPE_MIN = 10;      // px (đã quy đổi theo UI phone)
++    private static final long SWIPE_HOLD_MS = 350; // vuốt lên + giữ = đa nhiệm
++
++    private int flashX() { return phoneLeft + 8; }
++    private int flashY() { return phoneTop + metrics.screenH() - metrics.navThickness() - 22; }
++    private boolean onFlashlightButton(double mx, double my) {
++        return mode == Mode.MAIN && !inHomeFolder()
++                && mx >= flashX() && mx < flashX() + 16 && my >= flashY() && my < flashY() + 16;
++    }
++    private void drawFlashlightButton(GuiGraphics g) {
++        if (mode != Mode.MAIN || inHomeFolder()) return;
++        int x = flashX(), y = flashY();
++        g.fill(x, y + 1, x + 16, y + 15, flashlightOn ? 0xFFFFFFFF : 0xB0202024);
++        g.fill(x + 1, y, x + 15, y + 16, flashlightOn ? 0xFFFFFFFF : 0xB0202024);
++        int c = flashlightOn ? 0xFF1C1C1E : 0xFFFFFFFF;
++        g.fill(x + 5, y + 3, x + 11, y + 5, c);   // đầu đèn
++        g.fill(x + 6, y + 5, x + 10, y + 12, c);  // thân đèn
++    }
++    private void setFlashlight(boolean on) {
++        flashlightOn = on;
++        com.november.mcphone.core.net.MCphoneNetwork.sendToServer(
++                new com.november.mcphone.feature.flashlight.net.FlashlightPacket(on));
++    }
++
+     /** 按下那一刻，光标相对机身左上角的偏移。不记的话手机会"跳"到光标下面 */
+     private int hudGrabX, hudGrabY;
+ 
+@@ -1088,6 +1117,7 @@ public final class PhoneScreen extends PhoneScreenBase {
+         }
+ 
+         PhoneChassis.drawNavBar(g, font, phoneLeft, phoneTop, metrics, mouseX, mouseY, !folderOpen);
++        drawFlashlightButton(g);
+         if (changelogPopup) {
+             changelogDialog.render(g, phoneLeft, phoneTop, metrics.screenW(), sh, statusH, navH,
+                     font, true, pointerX, pointerY);
+@@ -1332,23 +1362,17 @@ public final class PhoneScreen extends PhoneScreenBase {
+             return true;
+         }
+ 
+-        switch (PhoneChassis.hitTestNavBar(mx, my, phoneLeft, phoneTop, metrics)) {
+-            case BACK -> {
+-                // 主屏上按返回不关机
+-                goBackOneLevel();
+-                return true;
+-            }
+-            case HOME -> {
+-                homeFolder.close();
+-                navigateTo(Mode.MAIN);
+-                return true;
+-            }
+-            case TASKS -> {
+-                if (hudMode) PhoneHud.showFullscreen(this);
+-                else PhoneHud.showAsHud(this);
+-                return true;
+-            }
+-            case NONE -> { }
++        if (onFlashlightButton(mx, my)) {
++            setFlashlight(!flashlightOn);
++            return true;
++        }
++        // Thanh điều hướng kiểu iPhone: bắt đầu vuốt, quyết định khi nhả chuột
++        if (PhoneChassis.hitTestNavBar(mx, my, phoneLeft, phoneTop, metrics) != PhoneChassis.NavButton.NONE) {
++            navSwiping = true;
++            navSwipeX = mx;
++            navSwipeY = my;
++            navSwipeAt = System.currentTimeMillis();
++            return true;
+         }
+ 
+         return switch (mode) {
+@@ -1655,6 +1679,27 @@ public final class PhoneScreen extends PhoneScreenBase {
+     @Override
+     public boolean mouseReleased(double rawX, double rawY, int button) {
+         if (changelogPopup) return true;
++        if (navSwiping && button == 0) {
++            navSwiping = false;
++            double dx = unscaledX(rawX) - navSwipeX;
++            double dy = unscaledY(rawY) - navSwipeY;
++            long held = System.currentTimeMillis() - navSwipeAt;
++            if (-dy >= SWIPE_MIN && Math.abs(dx) < Math.abs(dy) * 2) {
++                if (held >= SWIPE_HOLD_MS) {           // vuốt lên + giữ: đa nhiệm
++                    if (hudMode) PhoneHud.showFullscreen(this);
++                    else PhoneHud.showAsHud(this);
++                } else {                                // vuốt lên: về màn hình chính
++                    homeFolder.close();
++                    navigateTo(Mode.MAIN);
++                }
++            } else if (Math.abs(dx) >= SWIPE_MIN && Math.abs(dx) > Math.abs(dy)) {
++                goBackOneLevel();                       // vuốt ngang: quay lại
++            } else {
++                homeFolder.close();                     // chạm nhẹ: về màn hình chính
++                navigateTo(Mode.MAIN);
++            }
++            return true;
++        }
+         if (mode == Mode.CHAT && chatList.hasContextMenu()) return true;
+         if (hudDragging) {
+             hudDragging = false;

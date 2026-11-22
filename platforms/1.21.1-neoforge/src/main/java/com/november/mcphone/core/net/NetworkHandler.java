@@ -59,7 +59,7 @@ public final class NetworkHandler {
         // "3"：S17 Stage 2 的握手下发里，部署项加了 approvalRevision / approvedAt 两个 varlong。
         // 字段格式变了就抬（不只是包顺序）；旧客户端会把批准轴当动作表长度解码，表现为
         // "握手批次永远收不齐、本服看起来没部署"。Fabric 那一支没有这个闸，改在 begin.scriptApi。
-        PayloadRegistrar registrar = event.registrar("10");
+        PayloadRegistrar registrar = event.registrar("11");
 
         // C2S: 玩家选了壁纸
         MCphoneNetwork.registerToServer(
@@ -126,6 +126,12 @@ public final class NetworkHandler {
         com.november.mcphone.core.script.net.ScriptNetworking.register(registrar);
         com.november.mcphone.feature.chat.group.net.GroupNetworking.register(registrar);
         com.november.mcphone.feature.chat.profile.net.ProfileNetworking.register(registrar);
+
+        // Đèn pin: đăng ký CUỐI CÙNG để không đổi thứ tự các gói cũ
+        MCphoneNetwork.registerToServer(registrar,
+                com.november.mcphone.feature.flashlight.net.FlashlightPacket.TYPE,
+                com.november.mcphone.feature.flashlight.net.FlashlightPacket.STREAM_CODEC,
+                com.november.mcphone.feature.flashlight.Flashlight::handlePacket);
     }
 
     //  处理函数
